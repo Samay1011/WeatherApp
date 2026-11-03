@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.samay.weatherapp.data.repository.WeatherRepository
 import com.samay.weatherapp.model.City
+import com.samay.weatherapp.util.WeatherCodeMapper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -15,7 +16,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * ViewModel managing city search state, debouncing, and in-memory prefix caching.
+ * ViewModel managing city search state, debouncing, in-memory prefix caching,
+ * and forecast fetching.
  */
 class WeatherViewModel(
     private val repository: WeatherRepository = WeatherRepository(),
@@ -28,6 +30,7 @@ class WeatherViewModel(
     val uiState: StateFlow<WeatherUiState> = _uiState.asStateFlow()
 
     private var searchJob: Job? = null
+    private var forecastJob: Job? = null
 
     // In-memory cache holding the raw source results of the most recent API fetch
     private var cachedSourceCities: List<City> = emptyList()
@@ -102,17 +105,62 @@ class WeatherViewModel(
     }
 
     /**
-     * Selects a city, retains its complete data for future milestones,
-     * and clears the suggestion list.
+     * Selects a city, clears the suggestions list, and triggers a weather forecast request.
      */
     fun onCitySelected(city: City) {
         searchJob?.cancel()
+
+        // Avoid duplicate requests if the same city is already selected and loaded
+        val currentCity = _uiState.value.selectedCity
+        val currentForecastState = _uiState.value.forecastState
+        if (currentCity == city && currentForecastState is ForecastState.Success) {
+            _uiState.update {
+                it.copy(
+                    searchQuery = city.name,
+                    searchState = SearchState.Idle
+                )
+            }
+            return
+        }
+
         _uiState.update {
             it.copy(
                 searchQuery = city.name,
                 selectedCity = city,
                 searchState = SearchState.Idle
             )
+        }
+
+        fetchForecastForCity(city)
+    }
+
+    private fun fetchForecastForCity(city: City) {
+        forecastJob?.cancel()
+        forecastJob = scope.launch {
+            _uiState.update { it.copy(forecastState = ForecastState.Loading) }
+
+            try {
+                val forecast = repository.getForecast(
+                    latitude = city.latitude,
+                    longitude = city.longitude
+                )
+                val dailyItems = WeatherCodeMapper.mapDailyForecast(forecast.daily)
+
+                _uiState.update {
+                    it.copy(
+                        forecastState = ForecastState.Success(
+                            forecast = forecast,
+                            dailyItems = dailyItems
+                        )
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(forecastState = ForecastState.Error("Unable to load weather forecast. Please check your connection."))
+                }
+            }
         }
     }
 
@@ -124,5 +172,13 @@ class WeatherViewModel(
         if (trimmed.length >= MIN_QUERY_LENGTH) {
             triggerDebouncedSearch(trimmed)
         }
+    }
+
+    /**
+     * Retries forecast loading for the currently selected city.
+     */
+    fun retryForecast() {
+        val selectedCity = _uiState.value.selectedCity ?: return
+        fetchForecastForCity(selectedCity)
     }
 }
