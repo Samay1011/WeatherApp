@@ -1,14 +1,12 @@
 package com.samay.weatherapp.data.remote
 
-import okhttp3.ResponseBody
+import com.samay.weatherapp.model.ForecastResponse
+import com.samay.weatherapp.model.GeocodingResponse
 import retrofit2.http.GET
 import retrofit2.http.Query
 
 /**
  * Retrofit service interface for Open-Meteo Geocoding and Forecast APIs.
- *
- * Generic [ResponseBody] is used temporarily for Milestone M1-A to provide
- * a compilable service contract prior to the introduction of dedicated data models in M1-B.
  */
 interface OpenMeteoApi {
 
@@ -18,7 +16,7 @@ interface OpenMeteoApi {
         @Query("count") count: Int = 5,
         @Query("language") language: String = "en",
         @Query("format") format: String = "json"
-    ): ResponseBody
+    ): GeocodingResponse
 
     @GET("v1/forecast")
     suspend fun getForecast(
@@ -29,5 +27,5 @@ interface OpenMeteoApi {
         @Query("daily") daily: String = "weather_code,temperature_2m_max,temperature_2m_min",
         @Query("forecast_days") forecastDays: Int = 5,
         @Query("timezone") timezone: String = "auto"
-    ): ResponseBody
+    ): ForecastResponse
 }
