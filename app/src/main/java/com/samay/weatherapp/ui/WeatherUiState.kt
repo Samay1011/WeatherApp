@@ -26,7 +26,11 @@ sealed interface ForecastState {
         val forecast: ForecastResponse,
         val dailyItems: List<DailyForecastItem>,
         val selectedDate: String? = null,
-        val hourlyItems: List<HourlyForecastItem> = emptyList()
+        val hourlyItems: List<HourlyForecastItem> = emptyList(),
+        val isCached: Boolean = false,
+        val isOutdated: Boolean = false,
+        val isRefreshing: Boolean = false,
+        val lastUpdatedMillis: Long? = null
     ) : ForecastState
     data class Error(val message: String) : ForecastState
 }

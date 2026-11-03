@@ -8,13 +8,18 @@ import com.samay.weatherapp.model.DailyWeather
 import com.samay.weatherapp.model.ForecastResponse
 import com.samay.weatherapp.model.GeocodingResponse
 import com.samay.weatherapp.model.HourlyWeather
+import com.samay.weatherapp.model.CachedWeather
+import com.samay.weatherapp.data.local.WeatherDataStore
 import com.samay.weatherapp.util.WeatherCodeMapper
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.io.IOException
 
 class WeatherViewModelTest {
@@ -352,5 +357,242 @@ class WeatherViewModelTest {
         assertEquals("2026-11-03T10:00", safeResult[0].fullTime)
         assertEquals(25.0, safeResult[0].temperature, 0.001)
         assertEquals("Clear sky", safeResult[0].condition.description)
+    }
+
+    private fun createTestDataStore(): Pair<File, WeatherDataStore> {
+        val tempFile = File.createTempFile("test_ds", ".preferences_pb").apply { deleteOnExit() }
+        val dataStore = PreferenceDataStoreFactory.create(produceFile = { tempFile })
+        return Pair(tempFile, WeatherDataStore(dataStore))
+    }
+
+    @Test
+    fun testForecastResponseSavedToDataStore_onSuccessfulSelection() = runBlocking {
+        val fakeApi = FakeOpenMeteoApi()
+        val (_, weatherDataStore) = createTestDataStore()
+        val repository = WeatherRepository(fakeApi, weatherDataStore)
+        val viewModel = WeatherViewModel(repository, coroutineScope = this)
+
+        val city = City(name = "Mumbai", latitude = 19.076, longitude = 72.877, country = "India")
+        viewModel.onCitySelected(city)
+
+        // Poll DataStore to allow asynchronous disk flush
+        var cached: CachedWeather? = null
+        for (i in 1..20) {
+            delay(50)
+            cached = weatherDataStore.getCachedWeather()
+            if (cached != null) break
+        }
+
+        assertNotNull(cached)
+        assertEquals("Mumbai", cached?.city?.name)
+        assertEquals(19.076, cached?.city?.latitude ?: 0.0, 0.001)
+        assertNotNull(cached?.forecast)
+        assertTrue((cached?.timestampMillis ?: 0L) > 0L)
+    }
+
+    @Test
+    fun testSavedCityAndForecastRestored_afterRecreatingViewModel() = runBlocking {
+        val fakeApi = FakeOpenMeteoApi()
+        val (_, weatherDataStore) = createTestDataStore()
+        val repository1 = WeatherRepository(fakeApi, weatherDataStore)
+        val viewModel1 = WeatherViewModel(repository1, coroutineScope = this)
+
+        val city = City(name = "Tokyo", latitude = 35.676, longitude = 139.650, country = "Japan")
+        viewModel1.onCitySelected(city)
+        delay(100)
+
+        // Recreate ViewModel using the same DataStore
+        val repository2 = WeatherRepository(fakeApi, weatherDataStore)
+        val viewModel2 = WeatherViewModel(repository2, coroutineScope = this)
+        delay(100)
+
+        assertEquals("Tokyo", viewModel2.uiState.value.selectedCity?.name)
+        val state = viewModel2.uiState.value.forecastState
+        assertTrue(state is ForecastState.Success)
+        val successState = state as ForecastState.Success
+        assertEquals(5, successState.dailyItems.size)
+    }
+
+    @Test
+    fun testCachedWeatherDisplayed_whileStartupRefreshRunning() = runBlocking {
+        val (_, weatherDataStore) = createTestDataStore()
+        val city = City(name = "Berlin", latitude = 52.52, longitude = 13.405, country = "Germany")
+        val initialTimestamp = 123456789L
+        val dummyForecast = ForecastResponse(
+            latitude = 52.52,
+            longitude = 13.405,
+            current = CurrentWeather("2026-11-03T10:00", 15.0, 60, 0, 5.0),
+            daily = DailyWeather(
+                time = listOf("2026-11-03"),
+                weatherCode = listOf(0),
+                temperature2mMax = listOf(16.0),
+                temperature2mMin = listOf(8.0)
+            )
+        )
+        weatherDataStore.saveCachedWeather(CachedWeather(city, dummyForecast, initialTimestamp))
+
+        val delayedApi = FakeOpenMeteoApi().apply {
+            forecastDelayMs = 200L // Simulate network latency
+        }
+        val repository = WeatherRepository(delayedApi, weatherDataStore)
+        val viewModel = WeatherViewModel(repository, coroutineScope = this)
+
+        delay(50) // Cache is loaded, but network refresh is still in-flight
+        val state = viewModel.uiState.value.forecastState
+        assertTrue(state is ForecastState.Success)
+        val successState = state as ForecastState.Success
+        assertEquals(true, successState.isCached)
+        assertEquals(true, successState.isRefreshing)
+        assertEquals(false, successState.isOutdated)
+        assertEquals(initialTimestamp, successState.lastUpdatedMillis)
+        assertEquals("Berlin", viewModel.uiState.value.selectedCity?.name)
+
+        delay(250) // Network refresh finishes
+        val refreshedState = viewModel.uiState.value.forecastState as ForecastState.Success
+        assertEquals(false, refreshedState.isRefreshing)
+        assertEquals(false, refreshedState.isCached)
+        assertTrue((refreshedState.lastUpdatedMillis ?: 0L) > initialTimestamp)
+    }
+
+    @Test
+    fun testSuccessfulBackgroundRefresh_replacesPreviousCache() = runBlocking {
+        val (_, weatherDataStore) = createTestDataStore()
+        val city = City(name = "Paris", latitude = 48.856, longitude = 2.352, country = "France")
+        val initialTimestamp = 1000000L
+        val oldForecast = ForecastResponse(
+            latitude = 48.856,
+            longitude = 2.352,
+            current = CurrentWeather("2026-11-01T12:00", 12.0, 80, 3, 10.0)
+        )
+        weatherDataStore.saveCachedWeather(CachedWeather(city, oldForecast, initialTimestamp))
+
+        val fakeApi = FakeOpenMeteoApi()
+        val repository = WeatherRepository(fakeApi, weatherDataStore)
+        val viewModel = WeatherViewModel(repository, coroutineScope = this)
+        delay(100)
+
+        val updatedCache = weatherDataStore.getCachedWeather()
+        assertNotNull(updatedCache)
+        assertTrue((updatedCache?.timestampMillis ?: 0L) > initialTimestamp)
+        assertEquals(28.5, updatedCache?.forecast?.current?.temperature2m ?: 0.0, 0.001)
+
+        val state = viewModel.uiState.value.forecastState as ForecastState.Success
+        assertEquals(false, state.isOutdated)
+        assertEquals(false, state.isRefreshing)
+    }
+
+    @Test
+    fun testFailedBackgroundRefresh_preservesCachedWeatherAndTimestamp() = runBlocking {
+        val (_, weatherDataStore) = createTestDataStore()
+        val city = City(name = "Cairo", latitude = 30.044, longitude = 31.235, country = "Egypt")
+        val initialTimestamp = 99999999L
+        val cachedForecast = ForecastResponse(
+            latitude = 30.044,
+            longitude = 31.235,
+            current = CurrentWeather("2026-11-03T12:00", 32.0, 30, 0, 12.0),
+            daily = DailyWeather(
+                time = listOf("2026-11-03"),
+                weatherCode = listOf(0),
+                temperature2mMax = listOf(33.0),
+                temperature2mMin = listOf(22.0)
+            )
+        )
+        weatherDataStore.saveCachedWeather(CachedWeather(city, cachedForecast, initialTimestamp))
+
+        val failingApi = FakeOpenMeteoApi().apply {
+            shouldThrowForecastError = true
+        }
+        val repository = WeatherRepository(failingApi, weatherDataStore)
+        val viewModel = WeatherViewModel(repository, coroutineScope = this)
+        delay(100)
+
+        // UI preserves cached data, marks it as outdated, and keeps the original timestamp
+        val state = viewModel.uiState.value.forecastState
+        assertTrue(state is ForecastState.Success)
+        val successState = state as ForecastState.Success
+        assertEquals(true, successState.isOutdated)
+        assertEquals(false, successState.isRefreshing)
+        assertEquals(initialTimestamp, successState.lastUpdatedMillis)
+        assertEquals(32.0, successState.forecast.current?.temperature2m ?: 0.0, 0.001)
+
+        // DataStore cache was NOT overwritten or cleared
+        val storedCache = weatherDataStore.getCachedWeather()
+        assertEquals(initialTimestamp, storedCache?.timestampMillis)
+    }
+
+    @Test
+    fun testNoCachePlusFailedNetworkRequest_showsErrorState() = runBlocking {
+        val (_, weatherDataStore) = createTestDataStore()
+        val failingApi = FakeOpenMeteoApi().apply {
+            shouldThrowForecastError = true
+        }
+        val repository = WeatherRepository(failingApi, weatherDataStore)
+        val viewModel = WeatherViewModel(repository, coroutineScope = this)
+
+        val city = City(name = "Oslo", latitude = 59.913, longitude = 10.752, country = "Norway")
+        viewModel.onCitySelected(city)
+        delay(100)
+
+        val state = viewModel.uiState.value.forecastState
+        assertTrue(state is ForecastState.Error)
+        assertEquals(null, weatherDataStore.getCachedWeather())
+    }
+
+    @Test
+    fun testSelectingAnotherCity_doesNotDisplayPreviousCityCachedForecast() = runBlocking {
+        val (_, weatherDataStore) = createTestDataStore()
+        val slowApi = FakeOpenMeteoApi().apply {
+            forecastDelayMs = 200L
+        }
+        val repository = WeatherRepository(slowApi, weatherDataStore)
+        val viewModel = WeatherViewModel(repository, coroutineScope = this)
+
+        val city1 = City(name = "Rome", latitude = 41.902, longitude = 12.496, country = "Italy")
+        slowApi.forecastDelayMs = 0L
+        viewModel.onCitySelected(city1)
+        delay(50)
+
+        // Rome is successfully loaded and cached
+        assertTrue(viewModel.uiState.value.forecastState is ForecastState.Success)
+        assertEquals("Rome", viewModel.uiState.value.selectedCity?.name)
+
+        // Now select City 2 with delay
+        slowApi.forecastDelayMs = 200L
+        val city2 = City(name = "Madrid", latitude = 40.416, longitude = -3.703, country = "Spain")
+        viewModel.onCitySelected(city2)
+        delay(30) // City 2 is in-flight
+
+        // Should be Loading for Madrid, NOT showing Rome's forecast
+        assertEquals("Madrid", viewModel.uiState.value.selectedCity?.name)
+        assertEquals(ForecastState.Loading, viewModel.uiState.value.forecastState)
+
+        delay(250) // Madrid finishes
+        val madridState = viewModel.uiState.value.forecastState as ForecastState.Success
+        assertEquals("Madrid", viewModel.uiState.value.selectedCity?.name)
+        assertEquals(40.416, madridState.forecast.latitude, 0.001)
+    }
+
+    @Test
+    fun testMalformedOrMissingCachedData_doesNotCrashApp() = runBlocking {
+        val (tempFile, weatherDataStore) = createTestDataStore()
+        val testDataStore = PreferenceDataStoreFactory.create(produceFile = { tempFile })
+
+        // Inject corrupted/malformed JSON string
+        testDataStore.edit { prefs ->
+            prefs[WeatherDataStore.KEY_CACHED_WEATHER] = "{\"bad_json\": true, Corrupted..."
+        }
+
+        // Reading corrupted cache must return null safely
+        val cached = weatherDataStore.getCachedWeather()
+        assertEquals(null, cached)
+
+        // Starting ViewModel with corrupted cache must not crash and remain Idle
+        val fakeApi = FakeOpenMeteoApi()
+        val repository = WeatherRepository(fakeApi, weatherDataStore)
+        val viewModel = WeatherViewModel(repository, coroutineScope = this)
+        delay(50)
+
+        assertEquals(null, viewModel.uiState.value.selectedCity)
+        assertEquals(ForecastState.Idle, viewModel.uiState.value.forecastState)
     }
 }

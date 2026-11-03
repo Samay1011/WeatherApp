@@ -232,6 +232,13 @@ fun HomeScreen(
                     }
 
                     is ForecastState.Success -> {
+                        CacheStatusBanner(
+                            isRefreshing = forecastState.isRefreshing,
+                            isOutdated = forecastState.isOutdated,
+                            lastUpdatedMillis = forecastState.lastUpdatedMillis,
+                            onRetryRefresh = viewModel::retryForecast
+                        )
+
                         val current = forecastState.forecast.current
                         if (current != null) {
                             CurrentWeatherCard(
@@ -634,6 +641,95 @@ private fun HourlyForecastCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * Displays status feedback for offline cache:
+ * - Subtle spinner when background refresh is running
+ * - Outdated notice with retry button when refresh failed
+ * - Subtle timestamp badge when viewing cached or updated data
+ */
+@Composable
+fun CacheStatusBanner(
+    isRefreshing: Boolean,
+    isOutdated: Boolean,
+    lastUpdatedMillis: Long?,
+    onRetryRefresh: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (isRefreshing) {
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Updating forecast...",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    } else if (isOutdated && lastUpdatedMillis != null) {
+        Card(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "⚠️ Couldn't update weather",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        text = "Showing cached forecast from ${WeatherCodeMapper.formatLastUpdated(lastUpdatedMillis)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = onRetryRefresh,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Retry", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+    } else if (lastUpdatedMillis != null) {
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Text(
+                text = "Updated: ${WeatherCodeMapper.formatLastUpdated(lastUpdatedMillis)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
             )
         }
     }

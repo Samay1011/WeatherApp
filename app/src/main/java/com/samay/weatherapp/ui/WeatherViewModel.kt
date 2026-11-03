@@ -1,7 +1,10 @@
 package com.samay.weatherapp.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.samay.weatherapp.data.local.WeatherDataStore
 import com.samay.weatherapp.data.repository.WeatherRepository
 import com.samay.weatherapp.model.City
 import com.samay.weatherapp.util.WeatherCodeMapper
@@ -17,7 +20,7 @@ import kotlinx.coroutines.launch
 
 /**
  * ViewModel managing city search state, debouncing, in-memory prefix caching,
- * and forecast fetching.
+ * forecast fetching, and offline DataStore cache restoration/refreshing.
  */
 class WeatherViewModel(
     private val repository: WeatherRepository = WeatherRepository(),
@@ -39,6 +42,69 @@ class WeatherViewModel(
     companion object {
         private const val DEBOUNCE_MILLIS = 450L
         private const val MIN_QUERY_LENGTH = 2
+
+        /**
+         * Provides a ViewModelProvider.Factory wiring the production WeatherDataStore.
+         */
+        fun provideFactory(context: Context): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    val dataStore = WeatherDataStore(context)
+                    val repository = WeatherRepository(weatherDataStore = dataStore)
+                    return WeatherViewModel(repository = repository) as T
+                }
+            }
+    }
+
+    init {
+        loadCachedWeatherAndRefresh()
+    }
+
+    /**
+     * Checks DataStore on startup. If cached weather exists, renders it immediately
+     * and initiates a silent background refresh for the saved city.
+     */
+    fun loadCachedWeatherAndRefresh() {
+        scope.launch {
+            val cached = repository.getCachedWeather() ?: return@launch
+
+            // If a city has already been actively selected by user interaction, do not override it
+            if (_uiState.value.selectedCity != null) return@launch
+
+            val dailyItems = WeatherCodeMapper.mapDailyForecast(cached.forecast.daily)
+            val initialSelectedDate = dailyItems.firstOrNull()?.date
+            val hourlyItems = if (initialSelectedDate != null) {
+                WeatherCodeMapper.mapHourlyForecast(cached.forecast.hourly, initialSelectedDate)
+            } else {
+                emptyList()
+            }
+
+            // Immediately display cached weather
+            _uiState.update { state ->
+                if (state.selectedCity == null) {
+                    state.copy(
+                        selectedCity = cached.city,
+                        searchQuery = cached.city.name,
+                        forecastState = ForecastState.Success(
+                            forecast = cached.forecast,
+                            dailyItems = dailyItems,
+                            selectedDate = initialSelectedDate,
+                            hourlyItems = hourlyItems,
+                            isCached = true,
+                            isOutdated = false,
+                            isRefreshing = true,
+                            lastUpdatedMillis = cached.timestampMillis
+                        )
+                    )
+                } else {
+                    state
+                }
+            }
+
+            // Trigger silent background refresh for the saved city
+            refreshForecastForCity(cached.city, cachedTimestamp = cached.timestampMillis)
+        }
     }
 
     /**
@@ -110,10 +176,10 @@ class WeatherViewModel(
     fun onCitySelected(city: City) {
         searchJob?.cancel()
 
-        // Avoid duplicate requests if the same city is already selected and loaded
+        // Avoid duplicate requests if the same city is already selected and loaded fresh
         val currentCity = _uiState.value.selectedCity
         val currentForecastState = _uiState.value.forecastState
-        if (currentCity == city && currentForecastState is ForecastState.Success) {
+        if (currentCity == city && currentForecastState is ForecastState.Success && !currentForecastState.isOutdated) {
             _uiState.update {
                 it.copy(
                     searchQuery = city.name,
@@ -144,6 +210,9 @@ class WeatherViewModel(
                     latitude = city.latitude,
                     longitude = city.longitude
                 )
+                val now = System.currentTimeMillis()
+                repository.saveCachedWeather(city, forecast, now)
+
                 val dailyItems = WeatherCodeMapper.mapDailyForecast(forecast.daily)
                 val initialSelectedDate = dailyItems.firstOrNull()?.date
                 val hourlyItems = if (initialSelectedDate != null) {
@@ -152,21 +221,98 @@ class WeatherViewModel(
                     emptyList()
                 }
 
-                _uiState.update {
-                    it.copy(
-                        forecastState = ForecastState.Success(
-                            forecast = forecast,
-                            dailyItems = dailyItems,
-                            selectedDate = initialSelectedDate,
-                            hourlyItems = hourlyItems
+                _uiState.update { state ->
+                    if (state.selectedCity == city) {
+                        state.copy(
+                            forecastState = ForecastState.Success(
+                                forecast = forecast,
+                                dailyItems = dailyItems,
+                                selectedDate = initialSelectedDate,
+                                hourlyItems = hourlyItems,
+                                isCached = false,
+                                isOutdated = false,
+                                isRefreshing = false,
+                                lastUpdatedMillis = now
+                            )
                         )
-                    )
+                    } else {
+                        state
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(forecastState = ForecastState.Error("Unable to load weather forecast. Please check your connection."))
+                _uiState.update { state ->
+                    if (state.selectedCity == city) {
+                        state.copy(
+                            forecastState = ForecastState.Error("Unable to load weather forecast. Please check your connection.")
+                        )
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshForecastForCity(city: City, cachedTimestamp: Long) {
+        forecastJob?.cancel()
+        forecastJob = scope.launch {
+            try {
+                val freshForecast = repository.getForecast(
+                    latitude = city.latitude,
+                    longitude = city.longitude
+                )
+                val newTimestamp = System.currentTimeMillis()
+                repository.saveCachedWeather(city, freshForecast, newTimestamp)
+
+                val dailyItems = WeatherCodeMapper.mapDailyForecast(freshForecast.daily)
+                val currentSelectedDate = (_uiState.value.forecastState as? ForecastState.Success)?.selectedDate
+                val selectedDate = if (dailyItems.any { it.date == currentSelectedDate }) {
+                    currentSelectedDate
+                } else {
+                    dailyItems.firstOrNull()?.date
+                }
+                val hourlyItems = if (selectedDate != null) {
+                    WeatherCodeMapper.mapHourlyForecast(freshForecast.hourly, selectedDate)
+                } else {
+                    emptyList()
+                }
+
+                _uiState.update { state ->
+                    if (state.selectedCity == city) {
+                        state.copy(
+                            forecastState = ForecastState.Success(
+                                forecast = freshForecast,
+                                dailyItems = dailyItems,
+                                selectedDate = selectedDate,
+                                hourlyItems = hourlyItems,
+                                isCached = false,
+                                isOutdated = false,
+                                isRefreshing = false,
+                                lastUpdatedMillis = newTimestamp
+                            )
+                        )
+                    } else {
+                        state
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // If background refresh fails, preserve cached weather and flag as outdated
+                _uiState.update { state ->
+                    if (state.selectedCity == city && state.forecastState is ForecastState.Success) {
+                        state.copy(
+                            forecastState = state.forecastState.copy(
+                                isRefreshing = false,
+                                isOutdated = true,
+                                lastUpdatedMillis = cachedTimestamp
+                            )
+                        )
+                    } else {
+                        state
+                    }
                 }
             }
         }
@@ -212,6 +358,22 @@ class WeatherViewModel(
      */
     fun retryForecast() {
         val selectedCity = _uiState.value.selectedCity ?: return
-        fetchForecastForCity(selectedCity)
+        val currentForecastState = _uiState.value.forecastState
+        if (currentForecastState is ForecastState.Success) {
+            _uiState.update {
+                it.copy(
+                    forecastState = currentForecastState.copy(
+                        isRefreshing = true,
+                        isOutdated = false
+                    )
+                )
+            }
+            refreshForecastForCity(
+                city = selectedCity,
+                cachedTimestamp = currentForecastState.lastUpdatedMillis ?: System.currentTimeMillis()
+            )
+        } else {
+            fetchForecastForCity(selectedCity)
+        }
     }
 }

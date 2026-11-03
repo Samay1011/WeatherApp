@@ -117,4 +117,13 @@ object WeatherCodeMapper {
         }
         return items
     }
+
+    /**
+     * Formats an epoch millisecond timestamp into a human-readable string (e.g. "Nov 3, 3:45 PM").
+     */
+    fun formatLastUpdated(timestampMillis: Long): String {
+        val date = java.util.Date(timestampMillis)
+        val formatter = java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault())
+        return formatter.format(date)
+    }
 }
