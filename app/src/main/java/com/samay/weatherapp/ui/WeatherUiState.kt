@@ -3,6 +3,7 @@ package com.samay.weatherapp.ui
 import com.samay.weatherapp.model.City
 import com.samay.weatherapp.model.ForecastResponse
 import com.samay.weatherapp.util.DailyForecastItem
+import com.samay.weatherapp.util.HourlyForecastItem
 
 /**
  * Represents the current status of city search operations.
@@ -23,7 +24,9 @@ sealed interface ForecastState {
     data object Loading : ForecastState
     data class Success(
         val forecast: ForecastResponse,
-        val dailyItems: List<DailyForecastItem>
+        val dailyItems: List<DailyForecastItem>,
+        val selectedDate: String? = null,
+        val hourlyItems: List<HourlyForecastItem> = emptyList()
     ) : ForecastState
     data class Error(val message: String) : ForecastState
 }

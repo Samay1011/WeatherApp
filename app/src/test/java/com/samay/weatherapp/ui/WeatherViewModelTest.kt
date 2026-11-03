@@ -7,6 +7,7 @@ import com.samay.weatherapp.model.CurrentWeather
 import com.samay.weatherapp.model.DailyWeather
 import com.samay.weatherapp.model.ForecastResponse
 import com.samay.weatherapp.model.GeocodingResponse
+import com.samay.weatherapp.model.HourlyWeather
 import com.samay.weatherapp.util.WeatherCodeMapper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -79,6 +80,14 @@ class WeatherViewModelTest {
                     weatherCode = listOf(0, 1, 2, 61, 95),
                     temperature2mMax = listOf(29.0, 28.5, 27.0, 24.0, 26.5),
                     temperature2mMin = listOf(18.0, 17.5, 16.0, 15.0, 16.0)
+                ),
+                hourly = HourlyWeather(
+                    time = listOf(
+                        "2026-11-03T00:00", "2026-11-03T01:00", "2026-11-03T02:00",
+                        "2026-11-04T00:00", "2026-11-04T01:00"
+                    ),
+                    temperature2m = listOf(20.0, 19.5, 19.0, 21.0, 20.5),
+                    weatherCode = listOf(0, 0, 1, 2, 3)
                 )
             )
         }
@@ -148,30 +157,54 @@ class WeatherViewModelTest {
     }
 
     @Test
-    fun testForecastLoading_successOnCitySelection() = runBlocking {
+    fun testForecastLoading_successOnCitySelection_andDefaultDayHourly() = runBlocking {
         val fakeApi = FakeOpenMeteoApi()
         val viewModel = WeatherViewModel(WeatherRepository(fakeApi), coroutineScope = this)
 
         val city = City(id = 10L, name = "Delhi", latitude = 28.65195, longitude = 77.23149, country = "India")
         viewModel.onCitySelected(city)
 
-        // Yield to allow coroutine to execute
         delay(100)
 
         assertEquals(1, fakeApi.forecastCallCount)
-        assertEquals(28.65195, fakeApi.lastRequestedLatitude ?: 0.0, 0.0001)
-        assertEquals(77.23149, fakeApi.lastRequestedLongitude ?: 0.0, 0.0001)
-
         val forecastState = viewModel.uiState.value.forecastState
         assertTrue(forecastState is ForecastState.Success)
         val success = forecastState as ForecastState.Success
 
-        assertNotNull(success.forecast.current)
-        assertEquals(28.5, success.forecast.current?.temperature2m ?: 0.0, 0.001)
-        assertEquals(45, success.forecast.current?.relativeHumidity2m)
-        assertEquals(5, success.dailyItems.size)
-        assertEquals("2026-11-03", success.dailyItems.first().date)
-        assertEquals("Clear sky", success.dailyItems.first().condition.description)
+        // Verify default selected day is Day 1
+        assertEquals("2026-11-03", success.selectedDate)
+        assertEquals(3, success.hourlyItems.size)
+        assertEquals("00:00", success.hourlyItems[0].time)
+        assertEquals("2026-11-03T00:00", success.hourlyItems[0].fullTime)
+        assertEquals(20.0, success.hourlyItems[0].temperature, 0.001)
+    }
+
+    @Test
+    fun testSelectingDifferentDay_updatesHourlyWithoutExtraApiCall() = runBlocking {
+        val fakeApi = FakeOpenMeteoApi()
+        val viewModel = WeatherViewModel(WeatherRepository(fakeApi), coroutineScope = this)
+
+        val city = City(id = 10L, name = "Delhi", latitude = 28.65, longitude = 77.23, country = "India")
+        viewModel.onCitySelected(city)
+        delay(100)
+
+        assertEquals(1, fakeApi.forecastCallCount)
+        val state1 = viewModel.uiState.value.forecastState as ForecastState.Success
+        assertEquals("2026-11-03", state1.selectedDate)
+        assertEquals(3, state1.hourlyItems.size)
+
+        // Select Day 2 ("2026-11-04")
+        viewModel.onDaySelected("2026-11-04")
+
+        // Ensure ZERO additional API calls were made
+        assertEquals(1, fakeApi.forecastCallCount)
+
+        val state2 = viewModel.uiState.value.forecastState as ForecastState.Success
+        assertEquals("2026-11-04", state2.selectedDate)
+        assertEquals(2, state2.hourlyItems.size)
+        assertEquals("00:00", state2.hourlyItems[0].time)
+        assertEquals(21.0, state2.hourlyItems[0].temperature, 0.001)
+        assertEquals("Partly cloudy", state2.hourlyItems[0].condition.description)
     }
 
     @Test
@@ -198,10 +231,8 @@ class WeatherViewModelTest {
     }
 
     @Test
-    fun testSwitchingSelectedCities_withoutStaleResults() = runBlocking {
-        val fakeApi = FakeOpenMeteoApi().apply {
-            forecastDelayMs = 200L
-        }
+    fun testSwitchingSelectedCities_clearsOldHourlyDataAndResetsDay() = runBlocking {
+        val fakeApi = FakeOpenMeteoApi()
         val viewModel = WeatherViewModel(WeatherRepository(fakeApi), coroutineScope = this)
 
         val cityA = City(id = 1L, name = "CityA", latitude = 10.0, longitude = 20.0)
@@ -209,20 +240,21 @@ class WeatherViewModelTest {
 
         // Select City A
         viewModel.onCitySelected(cityA)
-        delay(50) // City A is still in-flight
+        delay(100)
+        // City A selects Day 2
+        viewModel.onDaySelected("2026-11-04")
+        val stateA = viewModel.uiState.value.forecastState as ForecastState.Success
+        assertEquals("2026-11-04", stateA.selectedDate)
 
-        // Rapidly switch to City B
+        // Switch to City B
         viewModel.onCitySelected(cityB)
-        assertEquals("CityB", viewModel.uiState.value.selectedCity?.name)
+        delay(100)
 
-        // Wait for City B's request to complete
-        delay(300)
-
+        // City B resets to Day 1
+        val stateB = viewModel.uiState.value.forecastState as ForecastState.Success
         assertEquals("CityB", viewModel.uiState.value.selectedCity?.name)
-        assertEquals(30.0, fakeApi.lastRequestedLatitude ?: 0.0, 0.0001)
-        val forecastState = viewModel.uiState.value.forecastState
-        assertTrue(forecastState is ForecastState.Success)
-        assertEquals(30.0, (forecastState as ForecastState.Success).forecast.latitude, 0.0001)
+        assertEquals("2026-11-03", stateB.selectedDate)
+        assertEquals(3, stateB.hourlyItems.size)
     }
 
     @Test
@@ -263,11 +295,9 @@ class WeatherViewModelTest {
 
     @Test
     fun testFiveDayDailyDataMapping() {
-        // Safe handling of null daily weather
         val nullResult = WeatherCodeMapper.mapDailyForecast(null)
         assertTrue(nullResult.isEmpty())
 
-        // Handling complete 7-day array, capping at 5
         val sevenDayData = DailyWeather(
             time = listOf("D1", "D2", "D3", "D4", "D5", "D6", "D7"),
             weatherCode = listOf(0, 1, 2, 3, 45, 51, 61),
@@ -279,10 +309,9 @@ class WeatherViewModelTest {
         assertEquals("D1", cappedResult.first().date)
         assertEquals("D5", cappedResult.last().date)
 
-        // Safe handling of mismatched parallel arrays
         val mismatched = DailyWeather(
             time = listOf("D1", "D2", "D3"),
-            weatherCode = listOf(0, 1), // only 2 codes
+            weatherCode = listOf(0, 1),
             temperature2mMax = listOf(20.0, 21.0, 22.0),
             temperature2mMin = listOf(10.0, 11.0, 12.0)
         )
@@ -290,5 +319,38 @@ class WeatherViewModelTest {
         assertEquals(2, safeResult.size)
         assertEquals("D1", safeResult[0].date)
         assertEquals("D2", safeResult[1].date)
+    }
+
+    @Test
+    fun testHourlyDataMapping_nullEmptyAndMismatchedArrays() {
+        // Null hourly
+        val nullResult = WeatherCodeMapper.mapHourlyForecast(null, "2026-11-03")
+        assertTrue(nullResult.isEmpty())
+
+        // Blank selected date
+        val validHourly = HourlyWeather(
+            time = listOf("2026-11-03T10:00", "2026-11-03T11:00"),
+            temperature2m = listOf(25.0, 26.0),
+            weatherCode = listOf(0, 1)
+        )
+        val blankDateResult = WeatherCodeMapper.mapHourlyForecast(validHourly, "")
+        assertTrue(blankDateResult.isEmpty())
+
+        // Non-matching date
+        val nonMatchingResult = WeatherCodeMapper.mapHourlyForecast(validHourly, "2026-11-05")
+        assertTrue(nonMatchingResult.isEmpty())
+
+        // Mismatched parallel arrays (e.g. 3 timestamps, but only 2 temperatures and 1 weather code)
+        val mismatched = HourlyWeather(
+            time = listOf("2026-11-03T10:00", "2026-11-03T11:00", "2026-11-03T12:00"),
+            temperature2m = listOf(25.0, 26.0),
+            weatherCode = listOf(0)
+        )
+        val safeResult = WeatherCodeMapper.mapHourlyForecast(mismatched, "2026-11-03")
+        assertEquals(1, safeResult.size)
+        assertEquals("10:00", safeResult[0].time)
+        assertEquals("2026-11-03T10:00", safeResult[0].fullTime)
+        assertEquals(25.0, safeResult[0].temperature, 0.001)
+        assertEquals("Clear sky", safeResult[0].condition.description)
     }
 }

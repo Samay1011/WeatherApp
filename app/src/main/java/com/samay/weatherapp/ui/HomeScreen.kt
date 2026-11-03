@@ -1,5 +1,6 @@
 package com.samay.weatherapp.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -29,17 +32,20 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.samay.weatherapp.model.City
 import com.samay.weatherapp.model.CurrentWeather
 import com.samay.weatherapp.util.DailyForecastItem
+import com.samay.weatherapp.util.HourlyForecastItem
 import com.samay.weatherapp.util.WeatherCodeMapper
 
 /**
  * Main application screen presenting the city search input, suggestions list,
- * current weather dashboard, and 5-day daily forecast.
+ * current weather dashboard, interactive 5-day daily forecast, and hourly details.
  */
 @Composable
 fun HomeScreen(
@@ -237,7 +243,18 @@ fun HomeScreen(
                         Spacer(modifier = Modifier.height(16.dp))
 
                         if (forecastState.dailyItems.isNotEmpty()) {
-                            DailyForecastSection(dailyItems = forecastState.dailyItems)
+                            DailyForecastSection(
+                                dailyItems = forecastState.dailyItems,
+                                selectedDate = forecastState.selectedDate,
+                                onDaySelected = viewModel::onDaySelected
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            HourlyForecastSection(
+                                selectedDate = forecastState.selectedDate,
+                                hourlyItems = forecastState.hourlyItems
+                            )
                         }
                     }
 
@@ -387,6 +404,8 @@ private fun CurrentWeatherCard(
 @Composable
 private fun DailyForecastSection(
     dailyItems: List<DailyForecastItem>,
+    selectedDate: String?,
+    onDaySelected: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
@@ -405,13 +424,18 @@ private fun DailyForecastSection(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant
             )
         ) {
-            Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(8.dp)) {
                 dailyItems.forEachIndexed { index, item ->
-                    DailyForecastRow(item = item)
+                    val isSelected = (item.date == selectedDate)
+                    DailyForecastRow(
+                        item = item,
+                        isSelected = isSelected,
+                        onClick = { onDaySelected(item.date) }
+                    )
                     if (index < dailyItems.lastIndex) {
                         HorizontalDivider(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
                         )
                     }
                 }
@@ -423,23 +447,45 @@ private fun DailyForecastSection(
 @Composable
 private fun DailyForecastRow(
     item: DailyForecastItem,
+    isSelected: Boolean,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val backgroundColor = if (isSelected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+    } else {
+        Color.Transparent
+    }
+
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .clip(RoundedCornerShape(10.dp))
+            .background(backgroundColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // Date
-        Text(
-            text = item.date,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(90.dp)
-        )
+        // Date with visual selection indicator
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (isSelected) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(MaterialTheme.colorScheme.primary)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+            }
+            Text(
+                text = item.date,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(if (isSelected) 84.dp else 90.dp)
+            )
+        }
 
         // Condition with Icon & Description
         Row(
@@ -454,7 +500,8 @@ private fun DailyForecastRow(
             Text(
                 text = item.condition.description,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
 
@@ -466,13 +513,127 @@ private fun DailyForecastRow(
                 text = "${item.maxTemp}°",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "${item.minTemp}°",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HourlyForecastSection(
+    selectedDate: String?,
+    hourlyItems: List<HourlyForecastItem>,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Hourly Forecast",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (selectedDate != null) {
+                Text(
+                    text = selectedDate,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        if (hourlyItems.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No hourly forecast available for this date.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(
+                    items = hourlyItems,
+                    key = { it.fullTime }
+                ) { item ->
+                    HourlyForecastCard(item = item)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HourlyForecastCard(
+    item: HourlyForecastItem,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.width(84.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = item.time,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = item.condition.icon,
+                fontSize = 24.sp
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "${item.temperature}°",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = item.condition.description,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
             )
         }
     }

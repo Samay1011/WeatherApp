@@ -1,6 +1,7 @@
 package com.samay.weatherapp.util
 
 import com.samay.weatherapp.model.DailyWeather
+import com.samay.weatherapp.model.HourlyWeather
 
 /**
  * Encapsulates human-readable weather condition text and visual icon emoji.
@@ -19,6 +20,17 @@ data class DailyForecastItem(
     val condition: WeatherConditionInfo,
     val maxTemp: Double,
     val minTemp: Double
+)
+
+/**
+ * Encapsulates a single hour's forecast mapped from API parallel arrays.
+ */
+data class HourlyForecastItem(
+    val time: String,
+    val fullTime: String,
+    val temperature: Double,
+    val weatherCode: Int,
+    val condition: WeatherConditionInfo
 )
 
 /**
@@ -70,5 +82,39 @@ object WeatherCodeMapper {
                 minTemp = daily.temperature2mMin[index]
             )
         }
+    }
+
+    /**
+     * Safely maps the hourly parallel arrays by index into structured [HourlyForecastItem]s,
+     * filtered by [selectedDate] (matching the date portion before 'T').
+     */
+    fun mapHourlyForecast(hourly: HourlyWeather?, selectedDate: String): List<HourlyForecastItem> {
+        if (hourly == null || selectedDate.isBlank()) return emptyList()
+
+        val count = minOf(
+            hourly.time.size,
+            hourly.temperature2m.size,
+            hourly.weatherCode.size
+        )
+
+        val items = ArrayList<HourlyForecastItem>()
+        for (i in 0 until count) {
+            val rawTime = hourly.time[i]
+            val datePart = if (rawTime.contains('T')) rawTime.substringBefore('T') else rawTime
+            if (datePart == selectedDate) {
+                val code = hourly.weatherCode[i]
+                val displayTime = if (rawTime.contains('T')) rawTime.substringAfter('T') else rawTime
+                items.add(
+                    HourlyForecastItem(
+                        time = displayTime,
+                        fullTime = rawTime,
+                        temperature = hourly.temperature2m[i],
+                        weatherCode = code,
+                        condition = getCondition(code)
+                    )
+                )
+            }
+        }
+        return items
     }
 }

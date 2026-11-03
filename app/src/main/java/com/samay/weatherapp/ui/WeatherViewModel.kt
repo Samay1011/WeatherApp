@@ -145,12 +145,20 @@ class WeatherViewModel(
                     longitude = city.longitude
                 )
                 val dailyItems = WeatherCodeMapper.mapDailyForecast(forecast.daily)
+                val initialSelectedDate = dailyItems.firstOrNull()?.date
+                val hourlyItems = if (initialSelectedDate != null) {
+                    WeatherCodeMapper.mapHourlyForecast(forecast.hourly, initialSelectedDate)
+                } else {
+                    emptyList()
+                }
 
                 _uiState.update {
                     it.copy(
                         forecastState = ForecastState.Success(
                             forecast = forecast,
-                            dailyItems = dailyItems
+                            dailyItems = dailyItems,
+                            selectedDate = initialSelectedDate,
+                            hourlyItems = hourlyItems
                         )
                     )
                 }
@@ -160,6 +168,31 @@ class WeatherViewModel(
                 _uiState.update {
                     it.copy(forecastState = ForecastState.Error("Unable to load weather forecast. Please check your connection."))
                 }
+            }
+        }
+    }
+
+    /**
+     * Updates the selected forecast date and extracts the hourly entries
+     * from the already fetched forecast payload without making an API request.
+     */
+    fun onDaySelected(date: String) {
+        val currentState = _uiState.value.forecastState
+        if (currentState !is ForecastState.Success) return
+        if (currentState.selectedDate == date) return
+
+        val updatedHourly = WeatherCodeMapper.mapHourlyForecast(currentState.forecast.hourly, date)
+
+        _uiState.update { state ->
+            if (state.forecastState is ForecastState.Success) {
+                state.copy(
+                    forecastState = state.forecastState.copy(
+                        selectedDate = date,
+                        hourlyItems = updatedHourly
+                    )
+                )
+            } else {
+                state
             }
         }
     }
